@@ -1,0 +1,24 @@
+name: Braccio UI regression tests
+
+on:
+  push:
+    branches: [main, ui-theme-redesign]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tk-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Tk and virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+      - name: Compile dashboard and tests
+        run: python -m py_compile CE5515_Braccio_Final_UI.py test_braccio_dashboard.py
+      - name: Run GUI regression tests
+        run: xvfb-run -a python -m unittest -v test_braccio_dashboard.py
