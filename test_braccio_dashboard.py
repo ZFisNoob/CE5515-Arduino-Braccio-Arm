@@ -39,7 +39,7 @@ class BraccioDashboardTests(unittest.TestCase):
 
     def test_serial_frame_exactly_seven_integers_with_newline(self):
         p = appmod.Pose(90, 90, 90, 90, 90, 40, 20)
-        self.assertEqual(p.to_line(), "90,90,90,90,90,40,20\\n")
+        self.assertEqual(p.to_line(), "90,90,90,90,90,40,20\n")
         self.assertEqual(len(p.to_line().strip().split(",")), 7)
 
     def test_serial_write_failure_is_reported_without_protocol_changes(self):
@@ -58,7 +58,7 @@ class BraccioDashboardTests(unittest.TestCase):
         manager.ser = BrokenSerial()
         self.assertFalse(manager.send_pose(appmod.HOME_POSE))
         self.assertTrue(any("mock cable removed" in message for message in messages))
-        self.assertEqual(appmod.HOME_POSE.to_line(), "90,90,90,90,90,40,20\\n")
+        self.assertEqual(appmod.HOME_POSE.to_line(), "90,90,90,90,90,40,20\n")
 
     def test_limits_and_home_pose_remain_compatible(self):
         self.assertEqual(
@@ -109,7 +109,7 @@ class BraccioDashboardTests(unittest.TestCase):
         self.assertEqual(self.app.theme_toggle_btn.cget("text"), "Switch to dark mode")
 
     def test_theme_can_be_loaded_from_saved_preference(self):
-        Path(appmod.THEME_PREFERENCE_PATH).write_text("dark\\n")
+        Path(appmod.THEME_PREFERENCE_PATH).write_text("dark\n")
         self.assertEqual(self.app._read_theme_preference(), "dark")
 
     def test_numeric_entry_not_overwritten_while_focused(self):
