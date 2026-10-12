@@ -39,7 +39,7 @@ except ImportError:
 # ----------------------------
 # CONFIG
 # ----------------------------
-ARM_PREVIEW_WIDTH = 430
+ARM_PREVIEW_WIDTH = 400
 ARM_PREVIEW_HEIGHT = 340
 PREVIEW_FRAME_MS = 24              # ~40 FPS for a smoother, more refined animation.
 DEFAULT_SEND_INTERVAL_MS = 90      # Throttle for optional live send while dragging.
@@ -284,6 +284,7 @@ class App(tk.Tk):
         COLORS.update(THEME_PALETTES[self.theme_name])
         self._value_labels: List[tk.Label] = []
         self._angle_entries: List[ttk.Entry] = []
+        self._plus_buttons: List[ttk.Button] = []
         self.title("Braccio Control Dashboard")
         self.geometry("1380x860")
         self.minsize(1120, 720)
@@ -667,8 +668,11 @@ class App(tk.Tk):
 
         body = ttk.Frame(content)
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=5, minsize=550)
-        body.columnconfigure(1, weight=2, minsize=260)
+        # Reserve enough width for the complete arm-control strip, including
+        # nudge buttons and numeric-angle inputs. The right diagnostics column
+        # can narrow and scroll its step table rather than clipping arm controls.
+        body.columnconfigure(0, weight=7, minsize=1000)
+        body.columnconfigure(1, weight=3, minsize=320)
         body.rowconfigure(0, weight=1)
 
         # The control column may exceed the available screen height at 125-200% DPI.
@@ -847,7 +851,7 @@ class App(tk.Tk):
 
         self.live_drag_chk = ttk.Checkbutton(
             conn,
-            text=f"Send while dragging (throttled ~{DEFAULT_SEND_INTERVAL_MS} ms)",
+            text=f"Live send while dragging (~{DEFAULT_SEND_INTERVAL_MS} ms)",
             variable=self.live_drag_var,
             command=self._on_live_drag_toggle,
         )
@@ -963,7 +967,10 @@ class App(tk.Tk):
         tree_sb = ttk.Scrollbar(self.rec_frame, command=self.steps_tree.yview)
         self.tree_sb = tree_sb
         tree_sb.grid(row=1, column=1, sticky="ns")
-        self.steps_tree.configure(yscrollcommand=tree_sb.set)
+        tree_hsb = ttk.Scrollbar(self.rec_frame, orient="horizontal", command=self.steps_tree.xview)
+        self.tree_hsb = tree_hsb
+        tree_hsb.grid(row=2, column=0, sticky="ew")
+        self.steps_tree.configure(yscrollcommand=tree_sb.set, xscrollcommand=tree_hsb.set)
 
         # Load a step into the sliders only on genuine user input — a mouse click
         # or arrow-key navigation. Programmatic selection (reorder, duplicate,
@@ -982,7 +989,7 @@ class App(tk.Tk):
             style="CardMuted.TLabel")
 
         rec_btns = ttk.Frame(self.rec_frame, style="Card.TFrame")
-        rec_btns.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        rec_btns.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         for i in range(4):
             rec_btns.columnconfigure(i, weight=1)
         self.move_up_btn = ttk.Button(rec_btns, text="↑ Move Up",
@@ -1093,6 +1100,7 @@ class App(tk.Tk):
         plus_btn = ttk.Button(parent, text="+", width=2,
                               command=lambda nm=name: self._nudge_joint(nm, self.step_size_var.get()))
         plus_btn.grid(row=row, column=4, sticky="w", padx=(6, 0), rowspan=2)
+        self._plus_buttons.append(plus_btn)
         self.lock_during_playback_widgets.extend([scale, minus_btn, plus_btn])
         # Absolute servo angle entry, committed on Return or focus loss.
         entry = ttk.Entry(parent, width=5)
@@ -1972,8 +1980,10 @@ class App(tk.Tk):
         self._update_step_buttons()
         if self.recorded:
             self.tree_sb.grid()
+            self.tree_hsb.grid()
         else:
             self.tree_sb.grid_remove()
+            self.tree_hsb.grid_remove()
         self._update_duration()
         if select_pos is not None and 0 <= select_pos < len(self.recorded):
             self._select_step_at(select_pos)
@@ -2214,6 +2224,8 @@ class App(tk.Tk):
         self.playback_status_var.set(message)
         self._set_playback_controls_enabled(True)
         self.play_resume.clear()
+        if hasattr(self, "pause_btn"):
+            self.pause_btn.configure(text="Pause playback")
         self._update_step_buttons()
         self._update_system_state()
 
@@ -2230,9 +2242,11 @@ class App(tk.Tk):
             return
         if self.play_resume.is_set():
             self.play_resume.clear()
+            self.pause_btn.configure(text="Pause playback")
             self.playback_status_var.set("Playback resumed")
         else:
             self.play_resume.set()
+            self.pause_btn.configure(text="Resume playback")
             self.playback_status_var.set("Playback paused")
 
     def _start_play_loop(self, once=False):
