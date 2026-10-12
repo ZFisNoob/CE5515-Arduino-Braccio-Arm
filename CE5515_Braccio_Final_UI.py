@@ -23,6 +23,7 @@ import threading
 import queue
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from pathlib import Path
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -53,21 +54,22 @@ SIM_DEG_PER_SEC_AT_MAX_SPEED = 280.0
 
 # ---- Refined palette (single warm accent + neutral chrome + semantic states) ----
 COLORS = {
-    "bg": "#f4f5f7",
-    "panel": "#ffffff",
-    "panel_alt": "#fafbfc",
-    "border": "#dfe3e8",
-    "text": "#1f2933",
-    "muted": "#6b7280",
-    "faint": "#9aa3af",
-    "accent": "#e8732a",       # Braccio orange
-    "accent_dark": "#c75d1c",
-    "accent_soft": "#fbe7d6",
-    "track": "#e6e8eb",
-    "canvas_bg": "#fcfcfd",
-    "floor": "#eceef1",
-    "grid": "#eef0f3",
+    "bg": "#f4f5f7", "panel": "#ffffff", "panel_alt": "#fafbfc",
+    "border": "#dfe3e8", "text": "#1f2933", "muted": "#6b7280",
+    "faint": "#9aa3af", "accent": "#e8732a", "accent_dark": "#c75d1c",
+    "accent_soft": "#fbe7d6", "track": "#e6e8eb", "canvas_bg": "#fcfcfd",
+    "floor": "#eceef1", "grid": "#eef0f3",
 }
+LIGHT_COLORS = dict(COLORS)
+DARK_COLORS = {
+    "bg": "#171b22", "panel": "#202630", "panel_alt": "#262d38",
+    "border": "#394250", "text": "#e6ebf2", "muted": "#a0acbb",
+    "faint": "#758295", "accent": "#f08a45", "accent_dark": "#e07832",
+    "accent_soft": "#493021", "track": "#343d49", "canvas_bg": "#1b222b",
+    "floor": "#252d38", "grid": "#2b3440",
+}
+THEME_PALETTES = {"light": LIGHT_COLORS, "dark": DARK_COLORS}
+THEME_PREFERENCE_PATH = os.path.join(os.path.expanduser("~"), ".braccio_dashboard_theme")
 
 # Per-link colors for the simulated arm (base->tip), tuned to read as one limb.
 ARM_LINK_COLORS = ("#d9641f", "#e8732a", "#f2913f")
@@ -263,6 +265,11 @@ class SerialManager:
                 return True
             except Exception as e:
                 self.log(f"ERR send: {e}")
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
                 return False
 
 
@@ -272,7 +279,12 @@ class SerialManager:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Braccio — Live Simulator + Record + Loop")
+        self.theme_name = self._read_theme_preference()
+        COLORS.clear()
+        COLORS.update(THEME_PALETTES[self.theme_name])
+        self._value_labels: List[tk.Label] = []
+        self._angle_entries: List[ttk.Entry] = []
+        self.title("Braccio Control Dashboard")
         self.geometry("1380x860")
         self.minsize(1120, 720)
         try:
@@ -293,6 +305,10 @@ class App(tk.Tk):
         self.recorded: List[Pose] = []
         self.play_thread: Optional[threading.Thread] = None
         self.play_stop = threading.Event()
+        self.play_resume = threading.Event()
+        self.play_once = False
+        self.trajectory_var = tk.BooleanVar(value=False)
+        self.duration_var = tk.StringVar(value="Estimated cycle: 0.0 s")
 
         self.vars: dict[str, tk.IntVar] = {}
         self.scales: dict[str, tk.Scale] = {}
@@ -351,6 +367,8 @@ class App(tk.Tk):
         self.playback_status_var = tk.StringVar(value="Idle")
 
         self._build_ui()
+        self._apply_classic_widget_theme()
+        self.theme_toggle_btn.configure(text=self._theme_button_text())
         self._refresh_ports()
         self._sync_target_from_sliders()
         self._draw_live_preview()
@@ -436,7 +454,76 @@ class App(tk.Tk):
             if not self._closing:
                 self.after(60, self._poll_ui_queue)
 
-    # ---------- UI ----------
+    # ---------- Theme and UI ----------
+    @staticmethod
+    def _read_theme_preference() -> str:
+        try:
+            value = Path(THEME_PREFERENCE_PATH).read_text(encoding="utf-8").strip().lower()
+            return value if value in THEME_PALETTES else "light"
+        except (OSError, ValueError):
+            return "light"
+
+    def _write_theme_preference(self):
+        try:
+            Path(THEME_PREFERENCE_PATH).write_text(self.theme_name + "\n", encoding="utf-8")
+        except OSError as exc:
+            self._log(f"WARN: Could not save theme preference: {exc}")
+
+    def _theme_button_text(self) -> str:
+        return "Switch to dark mode" if getattr(self, "theme_name", "light") == "light" else "Switch to light mode"
+
+    def _toggle_theme(self):
+        self.theme_name = "dark" if self.theme_name == "light" else "light"
+        COLORS.clear()
+        COLORS.update(THEME_PALETTES[self.theme_name])
+        self._init_style()
+        self._apply_classic_widget_theme()
+        self.theme_toggle_btn.configure(text=self._theme_button_text())
+        self._write_theme_preference()
+        self._draw_live_preview()
+        self._draw_gripper_bar_from_pose()
+        self._update_system_state()
+        self._log(f"Theme changed to {self.theme_name} mode.")
+
+    def _draw_gripper_bar_from_pose(self):
+        p = self.target_pose
+        span = LIMITS["gripper"][1] - LIMITS["gripper"][0]
+        pct = int(round((p.gripper - LIMITS["gripper"][0]) / span * 100))
+        pct = max(0, min(100, pct))
+        label = "open" if pct <= 25 else "closed" if pct >= 75 else "mid"
+        self._draw_gripper_bar(pct, label)
+
+    def _apply_classic_widget_theme(self):
+        c = COLORS
+        self.configure(bg=c["bg"])
+        self.controls_canvas.configure(bg=c["bg"])
+        self.preview_canvas.configure(bg=c["canvas_bg"], highlightbackground=c["border"])
+        self.gripper_bar.configure(bg=c["panel"])
+        self.paste_text.configure(bg=c["panel"], fg=c["text"], insertbackground=c["text"],
+                                  highlightbackground=c["border"])
+        self.console.configure(bg="#151a21", fg="#d7dee8", insertbackground="#d7dee8")
+        for label in getattr(self, "_value_labels", []):
+            label.configure(bg=c["panel"], fg=c["text"])
+        for name, scale in self.scales.items():
+            scale.configure(bg=c["panel"], troughcolor=c["track"],
+                            activebackground=JOINT_COLORS.get(name, c["accent"]),
+                            highlightbackground=c["border"])
+        for rb in getattr(self, "_step_radios", []):
+            rb.configure(bg=c["panel"], fg=c["muted"], selectcolor=c["accent_soft"],
+                         activebackground=c["accent_soft"], activeforeground=c["text"],
+                         highlightbackground=c["border"])
+        for w in self._iter_widgets(self):
+            if isinstance(w, tk.Canvas) and w not in (self.preview_canvas, self.gripper_bar, self.controls_canvas):
+                w.configure(bg=c["panel"])
+        self.steps_tree.tag_configure("odd", background=c["panel"])
+        self.steps_tree.tag_configure("even", background=c["panel_alt"])
+
+    @staticmethod
+    def _iter_widgets(root):
+        for child in root.winfo_children():
+            yield child
+            yield from App._iter_widgets(child)
+
     def _init_style(self):
         """Apply a refined, flat theme on top of ttk 'clam'."""
         style = ttk.Style(self)
@@ -452,11 +539,11 @@ class App(tk.Tk):
 
         style.configure(".", background=c["bg"], foreground=c["text"], font=base_font)
         style.configure("TFrame", background=c["bg"])
-        style.configure("Card.TFrame", background=c["bg"])
+        style.configure("Card.TFrame", background=c["panel"])
         style.configure("TLabel", background=c["bg"], foreground=c["text"])
         style.configure("Muted.TLabel", background=c["bg"], foreground=c["muted"])
-        style.configure("CardMuted.TLabel", background=c["bg"], foreground=c["muted"])
-        style.configure("Card.TLabel", background=c["bg"], foreground=c["text"])
+        style.configure("CardMuted.TLabel", background=c["panel"], foreground=c["muted"])
+        style.configure("Card.TLabel", background=c["panel"], foreground=c["text"])
         style.configure("Title.TLabel", background=c["bg"], foreground=c["text"],
                         font=("Segoe UI Semibold", 17))
         style.configure("Subtitle.TLabel", background=c["bg"], foreground=c["muted"],
@@ -467,16 +554,17 @@ class App(tk.Tk):
                         font=("Consolas", 11))
 
         # Bordered "card" frames over the uniform background.
-        style.configure("Card.TLabelframe", background=c["bg"], bordercolor=c["border"],
+        style.configure("Card.TLabelframe", background=c["panel"], bordercolor=c["border"],
                         relief="solid", borderwidth=1)
-        style.configure("Card.TLabelframe.Label", background=c["bg"],
+        style.configure("Card.TLabelframe.Label", background=c["panel"],
                         foreground=c["accent_dark"], font=("Segoe UI Semibold", 10))
 
         # Buttons: neutral default + an accent "primary" variant.
         style.configure("TButton", background=c["panel"], foreground=c["text"],
-                        bordercolor=c["border"], focusthickness=0, padding=(10, 6))
+                        bordercolor=c["border"], focusthickness=2, focuscolor=c["accent"],
+                        padding=(10, 6))
         style.map("TButton",
-                  background=[("active", "#eef0f3"), ("pressed", "#e3e6ea"),
+                  background=[("active", c["panel_alt"]), ("pressed", c["track"]),
                               ("disabled", c["panel_alt"])],
                   foreground=[("disabled", c["faint"])])
         style.configure("Primary.TButton", background=c["accent"], foreground="#ffffff",
@@ -489,21 +577,50 @@ class App(tk.Tk):
 
         style.configure("TCheckbutton", background=c["bg"], foreground=c["text"])
         style.map("TCheckbutton", background=[("active", c["bg"])])
-        style.configure("TCombobox", fieldbackground="#ffffff", background=c["panel"])
-        style.configure("TEntry", fieldbackground="#ffffff")
+        style.configure("TCombobox", fieldbackground=c["panel"], background=c["panel"],
+                        foreground=c["text"])
+        style.configure("TEntry", fieldbackground=c["panel"], foreground=c["text"])
         style.configure("TSeparator", background=c["border"])
 
         # Recorded-steps table.
-        style.configure("Steps.Treeview", background="#ffffff", fieldbackground="#ffffff",
-                        foreground=c["text"], rowheight=24, borderwidth=0,
+        style.configure("Steps.Treeview", background=c["panel"], fieldbackground=c["panel"],
+                        foreground=c["text"], rowheight=27, borderwidth=0,
                         font=("Consolas", 9))
-        style.configure("Steps.Treeview.Heading", background=c["bg"], foreground=c["muted"],
+        style.configure("Steps.Treeview.Heading", background=c["panel_alt"], foreground=c["muted"],
                         font=("Segoe UI Semibold", 8), relief="flat")
         style.map("Steps.Treeview.Heading", background=[("active", c["track"])])
         style.map("Steps.Treeview",
                   background=[("selected", c["accent_soft"])],
                   foreground=[("selected", c["accent_dark"])])
         return style
+
+    def _on_controls_content_resize(self, _event=None):
+        self.controls_canvas.configure(scrollregion=self.controls_canvas.bbox("all"))
+
+    def _on_controls_viewport_resize(self, event):
+        # Keep the simulator and joint sliders side by side at every DPI.
+        # When space is insufficient, allow horizontal scrolling rather than
+        # stacking the controls or clipping the right-hand +/angle inputs.
+        if not hasattr(self, "arm_controls_panel"):
+            return
+        required = self.arm_panel.winfo_reqwidth() + 24
+        self.controls_canvas.itemconfigure(
+            self._controls_window, width=max(event.width, required))
+        self.controls_canvas.after_idle(self._on_controls_content_resize)
+
+    def _bind_controls_wheel(self, _event=None):
+        self.bind_all("<MouseWheel>", self._scroll_controls_wheel)
+        self.bind_all("<Button-4>", self._scroll_controls_wheel)
+        self.bind_all("<Button-5>", self._scroll_controls_wheel)
+
+    def _unbind_controls_wheel(self, _event=None):
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
+
+    def _scroll_controls_wheel(self, event):
+        direction = -1 if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0 else 1
+        self.controls_canvas.yview_scroll(direction * 3, "units")
 
     def _build_ui(self):
         self._init_style()
@@ -541,17 +658,43 @@ class App(tk.Tk):
             relief="flat",
             bd=0,
         )
-        self.system_badge.grid(row=0, column=2, sticky="e")
+        self.system_badge.grid(row=0, column=2, sticky="e", padx=(0, 8))
+        self.theme_toggle_btn = ttk.Button(
+            header, text=self._theme_button_text(), command=self._toggle_theme,
+            style="TButton")
+        self.theme_toggle_btn.grid(row=0, column=3, sticky="e")
+        header.columnconfigure(1, weight=1)
 
         body = ttk.Frame(content)
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=5, minsize=980)
-        body.columnconfigure(1, weight=2, minsize=380)
+        body.columnconfigure(0, weight=5, minsize=550)
+        body.columnconfigure(1, weight=2, minsize=260)
         body.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(body)
+        # The control column may exceed the available screen height at 125-200% DPI.
+        # Scroll only that column, preserving the fixed-width simulator geometry.
+        left_host = ttk.Frame(body)
+        left_host.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left_host.columnconfigure(0, weight=1)
+        left_host.rowconfigure(0, weight=1)
+        self.controls_canvas = tk.Canvas(left_host, highlightthickness=0, bd=0,
+                                         bg=COLORS["bg"])
+        self.controls_canvas.grid(row=0, column=0, sticky="nsew")
+        self.controls_scrollbar = ttk.Scrollbar(left_host, orient="vertical",
+                                               command=self.controls_canvas.yview)
+        self.controls_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.controls_canvas.configure(yscrollcommand=self.controls_scrollbar.set)
+        self.controls_hscrollbar = ttk.Scrollbar(left_host, orient="horizontal",
+                                                 command=self.controls_canvas.xview)
+        self.controls_hscrollbar.grid(row=1, column=0, sticky="ew")
+        self.controls_canvas.configure(xscrollcommand=self.controls_hscrollbar.set)
+        left = ttk.Frame(self.controls_canvas)
+        self._controls_window = self.controls_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", self._on_controls_content_resize)
+        self.controls_canvas.bind("<Configure>", self._on_controls_viewport_resize)
+        self.controls_canvas.bind("<Enter>", self._bind_controls_wheel)
+        self.controls_canvas.bind("<Leave>", self._unbind_controls_wheel)
         right = ttk.Frame(body)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         right.grid(row=0, column=1, sticky="nsew")
 
         left.columnconfigure(0, weight=1)
@@ -562,6 +705,7 @@ class App(tk.Tk):
         arm = ttk.LabelFrame(left, text="  Manual Arm Control + Live Simulation  ",
                              style="Card.TLabelframe", padding=12)
         arm.grid(row=0, column=0, sticky="nsew")
+        self.arm_panel = arm
         # Column 0 (the preview) is pinned to a fixed width so that text whose
         # width changes during a drag (e.g. the gripper "open/closed" readout)
         # can never reflow the layout and shift the sliders sideways.
@@ -572,6 +716,7 @@ class App(tk.Tk):
 
         preview = ttk.Frame(arm, style="Card.TFrame")
         preview.grid(row=0, column=0, sticky="nw", padx=(0, 16))
+        self.preview_panel = preview
         preview.columnconfigure(0, weight=1)
 
         ttk.Label(preview, text="Live 2D arm simulator", style="Section.TLabel").grid(
@@ -596,6 +741,7 @@ class App(tk.Tk):
         self.preview_canvas.grid(row=2, column=0, sticky="n")
         self.preview_canvas.bind("<Motion>", self._on_canvas_motion)
         self.preview_canvas.bind("<Leave>", self._on_canvas_leave)
+        ttk.Checkbutton(preview, text="Show recorded trajectory", variable=self.trajectory_var, command=self._draw_live_preview).grid(row=6, column=0, sticky="w")
 
         # Fixed-width readout strip so its content never resizes the column.
         self.pose_readout_lbl = ttk.Label(
@@ -617,18 +763,20 @@ class App(tk.Tk):
 
         arm_controls = ttk.Frame(arm, style="Card.TFrame")
         arm_controls.grid(row=0, column=1, sticky="nsew")
+        self.arm_controls_panel = arm_controls
         arm_controls.columnconfigure(0, minsize=20)
         arm_controls.columnconfigure(1, minsize=128)
         arm_controls.columnconfigure(2, minsize=34)
-        arm_controls.columnconfigure(3, weight=1, minsize=300)
+        arm_controls.columnconfigure(3, weight=1, minsize=150)
         arm_controls.columnconfigure(4, minsize=34)
-        arm_controls.columnconfigure(5, minsize=66)
+        arm_controls.columnconfigure(5, minsize=45)
+        arm_controls.columnconfigure(6, minsize=50)
 
         ttk.Label(
             arm_controls,
             text="Drag a handle to scrub the target; release to commit. "
                  "Angles are relative to home:  – ◄  0  ► +.",
-            wraplength=560,
+            wraplength=390,
             justify="left",
             style="CardMuted.TLabel",
         ).grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 10))
@@ -637,6 +785,7 @@ class App(tk.Tk):
             row=1, column=0, columnspan=2, sticky="w")
         step_row = ttk.Frame(arm_controls, style="Card.TFrame")
         step_row.grid(row=1, column=2, columnspan=4, sticky="w", padx=(8, 0))
+        self._step_radios = []
         for step in (1, 2, 5, 10, 15, 30):
             rb = tk.Radiobutton(
                 step_row,
@@ -657,6 +806,7 @@ class App(tk.Tk):
                 highlightbackground=COLORS["border"],
             )
             rb.pack(side="left", padx=(0, 5))
+            self._step_radios.append(rb)
             self.lock_during_playback_widgets.append(rb)
 
         # Sliders ordered to match the physical arm from top (gripper) to bottom (base).
@@ -736,7 +886,12 @@ class App(tk.Tk):
         self.send_current_btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(0, 6), pady=(8, 0))
         self.play_btn = ttk.Button(controls, text="Play Loop", style="Primary.TButton",
                                    command=self._start_play_loop)
-        self.play_btn.grid(row=2, column=2, columnspan=2, sticky="ew", pady=(8, 0))
+        self.play_btn.grid(row=2, column=2, sticky="ew", pady=(8, 0))
+        self.once_btn = ttk.Button(controls, text="Play Once", command=lambda: self._start_play_loop(once=True))
+        self.once_btn.grid(row=2, column=3, sticky="ew", pady=(8, 0))
+        self.pause_btn = ttk.Button(controls, text="Pause playback", command=self._toggle_pause)
+        self.pause_btn.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(controls, textvariable=self.duration_var, style="CardMuted.TLabel").grid(row=4, column=2, columnspan=2, sticky="w")
 
         ttk.Label(controls, textvariable=self.playback_status_var, style="Card.TLabel",
                   foreground=COLORS["muted"]).grid(
@@ -750,7 +905,7 @@ class App(tk.Tk):
             self.save_btn,
             self.load_btn,
             self.send_current_btn,
-            self.play_btn,
+            self.play_btn, self.once_btn,
         ])
 
         timing = ttk.LabelFrame(left, text="  Dynamic Timing  ", style="Card.TLabelframe", padding=12)
@@ -801,11 +956,12 @@ class App(tk.Tk):
             self.steps_tree.column(cdef, width=widths[cdef], anchor=anchor, stretch=False)
         self.steps_tree.column("idx", anchor="center")
         # Zebra striping for fast scanning.
-        self.steps_tree.tag_configure("odd", background="#ffffff")
-        self.steps_tree.tag_configure("even", background="#f6f7f9")
+        self.steps_tree.tag_configure("odd", background=COLORS["panel"])
+        self.steps_tree.tag_configure("even", background=COLORS["panel_alt"])
         self.steps_tree.grid(row=1, column=0, sticky="nsew")
 
         tree_sb = ttk.Scrollbar(self.rec_frame, command=self.steps_tree.yview)
+        self.tree_sb = tree_sb
         tree_sb.grid(row=1, column=1, sticky="ns")
         self.steps_tree.configure(yscrollcommand=tree_sb.set)
 
@@ -918,7 +1074,7 @@ class App(tk.Tk):
             resolution=1,
             sliderlength=20,
             width=16,
-            length=320,
+            length=170,
             command=lambda x, nm=name: self._on_scale_move(nm, x),
             highlightthickness=0,
             borderwidth=1,
@@ -928,8 +1084,8 @@ class App(tk.Tk):
             activebackground=accent,
         )
         scale.set(default)
-        scale.grid(row=row, column=3, sticky="ew", padx=8)
-        self.scales[name] = scale
+        scale.grid(row=row, column=3, sticky="ew", padx=8)        self.scales[name] = scale
+        scale.bind("<FocusIn>", lambda _e, nm=name: self._log(f"Focused {nm}: arrow keys adjust the slider"))
 
         minus_btn = ttk.Button(parent, text="–", width=2,
                                command=lambda nm=name: self._nudge_joint(nm, -self.step_size_var.get()))
@@ -938,6 +1094,49 @@ class App(tk.Tk):
                               command=lambda nm=name: self._nudge_joint(nm, self.step_size_var.get()))
         plus_btn.grid(row=row, column=4, sticky="w", padx=(6, 0), rowspan=2)
         self.lock_during_playback_widgets.extend([scale, minus_btn, plus_btn])
+        # Absolute servo angle entry, committed on Return or focus loss.
+        entry = ttk.Entry(parent, width=5)
+        entry.insert(0, str(HOME_POSE.__dict__[name] if name != "speed" else default))
+        entry.grid(row=row, column=6, padx=(5, 0), sticky="w", rowspan=2)
+        self._angle_entries.append(entry)
+        def commit_entry(_event=None):
+            try:
+                absolute = int(entry.get().strip())
+                if not LIMITS[name][0] <= absolute <= LIMITS[name][1]:
+                    raise ValueError("outside servo limits")
+                relative = absolute if name == "speed" else absolute - getattr(HOME_POSE, name)
+                changed = relative != self.vars[name].get()
+                self._scale_guard[name] = True
+                try:
+                    self.scales[name].set(relative)
+                finally:
+                    self._scale_guard[name] = False
+                if changed:
+                    self._sync_target_from_sliders()
+                    self._commit_preview()
+                    self._send_current("numeric-entry", force=True)
+            except (ValueError, tk.TclError):
+                self._log(f"WARN: Invalid {name} angle. Allowed: {LIMITS[name][0]}..{LIMITS[name][1]}")
+            entry.delete(0, "end")
+            entry.insert(0, str(getattr(self._current_pose(), name)))
+        entry.bind("<Return>", commit_entry)
+        entry.bind("<FocusOut>", commit_entry)
+        self.lock_during_playback_widgets.append(entry)
+
+        def sync_angle_entry(*_):
+            # Update the numeric display from the slider, but never interrupt
+            # text that the operator is actively entering.
+            try:
+                if entry.focus_get() == entry:
+                    return
+            except tk.TclError:
+                return
+            absolute_value = v.get() if name == "speed" else v.get() + getattr(HOME_POSE, name)
+            if entry.get() != str(absolute_value):
+                entry.delete(0, "end")
+                entry.insert(0, str(absolute_value))
+
+        v.trace_add("write", sync_angle_entry)
 
         # Clear semantic direction under each slider.
         if name in ARM_JOINTS:
@@ -963,6 +1162,7 @@ class App(tk.Tk):
         val_lbl = tk.Label(parent, width=4, anchor="e", text=str(default),
                            bg=c["bg"], fg=c["text"], font=("Consolas", 10, "bold"))
         val_lbl.grid(row=row, column=5, sticky="ne", rowspan=2)
+        self._value_labels.append(val_lbl)
 
         def update_lbl(*_):
             val_lbl.configure(text=str(v.get()))
@@ -1318,6 +1518,17 @@ class App(tk.Tk):
         if delta > 1.0:
             self._draw_chain(ghost_values, ghost=True)
         self._draw_chain(self.sim_values, ghost=False)
+        if self.trajectory_var.get():
+            points = []
+            for pose in self.recorded:
+                joints = self._forward_kinematics(pose_to_values(pose))
+                # End effector is the final joint in the 2D kinematic chain.
+                if isinstance(joints, dict):
+                    pt = joints.get("tip") or joints.get("gripper")
+                    if isinstance(pt, (tuple, list)) and len(pt) >= 2:
+                        points.extend(pt[:2])
+            if len(points) >= 4:
+                canvas.create_line(*points, fill="#e08b39", width=2, dash=(3, 5))
 
         # Legend chip.
         if self._active_drag:
@@ -1759,6 +1970,11 @@ class App(tk.Tk):
                                    values=(f"{i + 1:02d}",) + self._step_row_values(p),
                                    tags=(tag,))
         self._update_step_buttons()
+        if self.recorded:
+            self.tree_sb.grid()
+        else:
+            self.tree_sb.grid_remove()
+        self._update_duration()
         if select_pos is not None and 0 <= select_pos < len(self.recorded):
             self._select_step_at(select_pos)
 
@@ -1883,8 +2099,7 @@ class App(tk.Tk):
             nums = [int(x) for x in parts]
         except ValueError:
             return None
-        return Pose(
-            base=clamp("base", nums[0]),
+        return Pose(            base=clamp("base", nums[0]),
             shoulder=clamp("shoulder", nums[1]),
             elbow=clamp("elbow", nums[2]),
             wristV=clamp("wristV", nums[3]),
@@ -1951,6 +2166,10 @@ class App(tk.Tk):
         while time.time() < end:
             if self.play_stop.is_set():
                 break
+            if self.play_resume.is_set():
+                time.sleep(0.01)
+                end += 0.01
+                continue
             time.sleep(0.01)
 
     def _max_delta_deg(self, a: Pose, b: Pose) -> int:
@@ -1994,10 +2213,29 @@ class App(tk.Tk):
     def _on_playback_finished_ui(self, message: str = "Playback stopped"):
         self.playback_status_var.set(message)
         self._set_playback_controls_enabled(True)
+        self.play_resume.clear()
         self._update_step_buttons()
         self._update_system_state()
 
-    def _start_play_loop(self):
+    def _update_duration(self):
+        current = self.last_commanded
+        total = 0
+        for target in self.recorded:
+            total += max(max(0, self._get_int(self.base_delay_var, 500)), self._max_delta_deg(current, target) * max(1, self._get_int(self.ms_per_deg_var, 18))) + max(0, self._get_int(self.settle_var, 200))
+            current = target
+        self.duration_var.set(f"Estimated cycle: {total / 1000:.1f} s")
+
+    def _toggle_pause(self):
+        if not self.play_thread or not self.play_thread.is_alive():
+            return
+        if self.play_resume.is_set():
+            self.play_resume.clear()
+            self.playback_status_var.set("Playback resumed")
+        else:
+            self.play_resume.set()
+            self.playback_status_var.set("Playback paused")
+
+    def _start_play_loop(self, once=False):
         if self.play_thread and self.play_thread.is_alive():
             self._log("Playback already running")
             return
@@ -2019,6 +2257,15 @@ class App(tk.Tk):
         settle = max(0, self._get_int(self.settle_var, 200))
         ms_per_deg = max(1, self._get_int(self.ms_per_deg_var, 18))
         steps = list(self.recorded)
+        for index, pose in enumerate(steps, 1):
+            for field, (lo, hi) in LIMITS.items():
+                if not lo <= getattr(pose, field) <= hi:
+                    self._log(f"ERR preflight: step {index} {field} out of range ({lo}..{hi})")
+                    messagebox.showerror("Invalid sequence", f"Step {index}: {field} outside {lo}..{hi}")
+                    return
+        self.play_once = once
+        self.play_resume.clear()
+        self._update_duration()
 
         self._cancel_pending_send()
         self.play_stop.clear()
@@ -2038,6 +2285,10 @@ class App(tk.Tk):
 
             while not self.play_stop.is_set():
                 for i, target in enumerate(steps, start=1):
+                    if self.play_stop.is_set():
+                        break
+                    while self.play_resume.is_set() and not self.play_stop.is_set():
+                        time.sleep(0.01)
                     if self.play_stop.is_set():
                         break
 
@@ -2065,8 +2316,11 @@ class App(tk.Tk):
                     self.last_commanded = target
                     self._sleep_responsive(wait_ms)
                     current = target
+                if self.play_once and not self.play_stop.is_set():
+                    stopped_message = "Playback completed (once)"
+                    break
 
-            self._log("Playback stopped")
+            self._log(stopped_message)
             # Hand the "finished" cleanup back to the main thread so the UI is
             # always unlocked even if a step send failed mid-loop.
             self.ui_q.put(("done", stopped_message))
@@ -2077,6 +2331,7 @@ class App(tk.Tk):
 
     def _stop_play(self):
         self.play_stop.set()
+        self.play_resume.clear()
         if self.play_thread and self.play_thread.is_alive():
             self.playback_status_var.set("Stopping playback...")
 
@@ -2095,6 +2350,11 @@ class App(tk.Tk):
             self.serial_mgr.disconnect()
         except Exception:
             pass
+        for timer_id in self.tk.call("after", "info"):
+            try:
+                self.after_cancel(timer_id)
+            except tk.TclError:
+                pass
         self.destroy()
 
 
