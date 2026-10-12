@@ -42,6 +42,24 @@ class BraccioDashboardTests(unittest.TestCase):
         self.assertEqual(p.to_line(), "90,90,90,90,90,40,20\\n")
         self.assertEqual(len(p.to_line().strip().split(",")), 7)
 
+    def test_serial_write_failure_is_reported_without_protocol_changes(self):
+        messages = []
+        manager = appmod.SerialManager(messages.append)
+
+        class BrokenSerial:
+            is_open = True
+            def write(self, _payload):
+                raise OSError("mock cable removed")
+            def flush(self):
+                pass
+            def close(self):
+                self.is_open = False
+
+        manager.ser = BrokenSerial()
+        self.assertFalse(manager.send_pose(appmod.HOME_POSE))
+        self.assertTrue(any("mock cable removed" in message for message in messages))
+        self.assertEqual(appmod.HOME_POSE.to_line(), "90,90,90,90,90,40,20\\n")
+
     def test_limits_and_home_pose_remain_compatible(self):
         self.assertEqual(
             (appmod.HOME_POSE.base, appmod.HOME_POSE.gripper, appmod.HOME_POSE.speed),
@@ -149,6 +167,35 @@ class BraccioDashboardTests(unittest.TestCase):
         self.app.update()
         self.assertIn("Playback completed", self.app.playback_status_var.get())
         self.assertEqual(str(self.app.add_btn.cget("state")), "normal")
+
+    def test_status_badge_uses_theme_appropriate_semantic_colors(self):
+        self.app._update_system_state()
+        self.assertEqual(self.app.system_badge.cget("bg"), "#fff7ed")
+        self.app._toggle_theme()
+        self.app._update_system_state()
+        self.assertEqual(self.app.system_badge.cget("bg"), "#3f3020")
+
+    def test_pause_button_label_tracks_pause_and_resume(self):
+        self.app.hardware_send_var.set(False)
+        self.app.base_delay_var.set(1000)
+        self.app.settle_var.set(0)
+        self.app._add_step()
+        self.app._start_play_loop(once=True)
+        deadline = time.time() + 0.5
+        while time.time() < deadline and not (self.app.play_thread and self.app.play_thread.is_alive()):
+            self.app.update()
+            time.sleep(0.01)
+        self.app._toggle_pause()
+        self.assertEqual(self.app.pause_btn.cget("text"), "Resume playback")
+        self.assertTrue(self.app.play_resume.is_set())
+        self.app._toggle_pause()
+        self.assertEqual(self.app.pause_btn.cget("text"), "Pause playback")
+        self.app._stop_play()
+        deadline = time.time() + 1.0
+        while time.time() < deadline and self.app.play_thread and self.app.play_thread.is_alive():
+            self.app.update()
+            time.sleep(0.01)
+        self.app.update()
 
     def test_theme_toggle_preserves_pose_and_serial_protocol(self):
         before = self.app._current_pose()
