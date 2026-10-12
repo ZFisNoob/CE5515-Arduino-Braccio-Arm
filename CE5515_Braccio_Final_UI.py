@@ -1091,7 +1091,8 @@ class App(tk.Tk):
             activebackground=accent,
         )
         scale.set(default)
-        scale.grid(row=row, column=3, sticky="ew", padx=8)        self.scales[name] = scale
+        scale.grid(row=row, column=3, sticky="ew", padx=8)
+        self.scales[name] = scale
         scale.bind("<FocusIn>", lambda _e, nm=name: self._log(f"Focused {nm}: arrow keys adjust the slider"))
 
         minus_btn = ttk.Button(parent, text="–", width=2,
