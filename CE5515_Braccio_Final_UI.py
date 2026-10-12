@@ -1928,16 +1928,24 @@ class App(tk.Tk):
         playing = self.play_thread is not None and self.play_thread.is_alive() and not self.play_stop.is_set()
         hw_enabled = self.hardware_send_var.get()
 
+        dark = getattr(self, "theme_name", "light") == "dark"
         if playing:
-            text, bg, fg = "PLAYBACK RUNNING", "#fef3c7", "#92400e"
+            text = "PLAYBACK RUNNING"
+            bg, fg = ("#4b3714", "#f7d48a") if dark else ("#fef3c7", "#92400e")
         elif connected and hw_enabled:
-            text, bg, fg = "LIVE READY", "#dcfce7", "#166534"
+            text = "LIVE READY"
+            bg, fg = ("#183a2b", "#85e0ad") if dark else ("#dcfce7", "#166534")
         elif connected and not hw_enabled:
-            text, bg, fg = "SIM ONLY - CONNECTED", "#e0f2fe", "#075985"
+            text = "SIM ONLY - CONNECTED"
+            bg, fg = ("#17364b", "#8bd4f4") if dark else ("#e0f2fe", "#075985")
         elif not connected and hw_enabled:
-            text, bg, fg = "SIM READY - DISCONNECTED", "#fee2e2", "#991b1b"
+            # Disconnected is expected during simulation; use an amber warning,
+            # not an error-red alarm that implies the app itself has failed.
+            text = "SIM READY - DISCONNECTED"
+            bg, fg = ("#3f3020", "#f6c987") if dark else ("#fff7ed", "#9a3412")
         else:
-            text, bg, fg = "SIMULATION ONLY", "#e5e7eb", "#374151"
+            text = "SIMULATION ONLY"
+            bg, fg = ("#303846", "#cbd5e1") if dark else ("#e5e7eb", "#374151")
 
         self.system_state_var.set(text)
         try:
