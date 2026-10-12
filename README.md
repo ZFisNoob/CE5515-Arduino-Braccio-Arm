@@ -264,3 +264,41 @@ A further round of usability work added:
 
 No changes were made to the command format, baud rate, servo limits, home pose,
 or CSV format.
+
+
+## 8. Interface themes and recent UI refinements
+
+The dashboard includes a **Switch to dark mode / Switch to light mode** control in
+the header. The selection is saved in `~/.braccio_dashboard_theme` on the current
+user account and restored on the next launch. The theme updates the surrounding
+Tk/ttk interface, slider tracks, numeric controls, simulator canvas, trajectory
+grid, step table, and paste area. The diagnostics console intentionally remains
+dark in both themes so transmit, simulation, warning, and error messages retain
+consistent contrast.
+
+The simulator remains a lightweight **2D** view. No 3D rendering dependency is
+required. The preview was narrowed slightly to protect the complete joint-control
+strip, while the left column now reserves width for the minus/plus nudges,
+sliders, value chips, and absolute-angle entries. On narrower displays, the
+recorded-step table can scroll horizontally; its horizontal scrollbar is hidden
+when there are no recorded steps.
+
+Numeric-angle fields are no longer overwritten while a user is actively typing.
+Playback's pause button reflects its current action (Pause or Resume). These
+interface changes do not alter the seven-integer newline-terminated serial
+frame, the 115200 baud rate, the servo limits, or the home pose.
+
+### Theme and layout verification
+
+Run the GUI regression tests in a graphical session or under Xvfb:
+
+```bash
+python -m unittest -v test_braccio_dashboard.py
+```
+
+The tests cover serial framing, servo limits, CSV parsing, recording-table
+operations, light/dark theme switching and persistence, focused numeric entry,
+trajectory drawing, Play Once simulation playback, side-by-side arm controls,
+and slider/numeric-input layout bounds. The screenshots in the refinement ZIP
+show the light and dark themes. Native Windows DPI behavior and physical Arduino
+motion should still be checked on the target computer and hardware.
